@@ -1,0 +1,147 @@
+# All dependencies.......... 😊
+
+!pip install tensorflow opencv-python scikit-learn
+!pip install gradio --quiet
+
+import os
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+
+
+
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.datasets import cifar10
+from sklearn.datasets import fetch_lfw_people
+lfw = fetch_lfw_people(min_faces_per_person=1, resize=0.5, color=True)
+faces = lfw.images
+faces = np.array(faces)
+
+face_images = [cv2.resize(img, (128, 128)) for img in faces]
+face_images = np.array(face_images)
+
+
+(x_train, y_train), (x_test, y_test) = cifar10.load_data()
+cifar_images = np.concatenate([x_train, x_test])
+cifar_labels = np.concatenate([y_train, y_test])
+
+non_face_images = cifar_images[(cifar_labels != 2).flatten()]
+non_face_images = [cv2.resize(img, (128, 128)) for img in non_face_images]
+non_face_images = np.array(non_face_images)
+
+face_images = face_images[:3000]
+non_face_images = non_face_images[:3000]
+
+X = np.concatenate([face_images, non_face_images], axis=0)
+y = np.array([1]*len(face_images) + [0]*len(non_face_images))
+
+X = X / 255.0
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+
+
+datagen = ImageDataGenerator(
+    rotation_range=15,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    zoom_range=0.1,
+    horizontal_flip=True
+)
+datagen.fit(X_train)
+
+
+
+base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(128, 128, 3))
+base_model.trainable = False
+
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.3)(x)
+predictions = Dense(1, activation='sigmoid')(x)
+
+model = Model(inputs=base_model.input, outputs=predictions)
+
+model.compile(optimizer=Adam(learning_rate=1e-4),
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+
+
+history = model.fit(
+    datagen.flow(X_train, y_train, batch_size=32),
+    validation_data=(X_test, y_test),
+    epochs=5
+)
+
+
+
+y_pred = (model.predict(X_test) > 0.5).astype("int32")
+
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=["Non-Face", "Face"]))
+
+print("\nConfusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
+
+
+
+plt.figure(figsize=(12, 4))
+plt.subplot(1, 2, 1)
+plt.plot(history.history['accuracy'], label='train_acc')
+plt.plot(history.history['val_accuracy'], label='val_acc')
+plt.legend()
+plt.title('Accuracy')
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history['loss'], label='train_loss')
+plt.plot(history.history['val_loss'], label='val_loss')
+plt.legend()
+plt.title('Loss')
+
+plt.show()
+import gradio as gr
+import numpy as np
+from PIL import Image
+
+def detect_face(image):
+    img = image.convert('RGBA').convert('RGB')
+
+
+    img_resized = img.resize((128, 128))
+    img_array = np.array(img_resized) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
+
+    pred = model.predict(img_array)[0][0]
+
+
+    if pred < 0.5:
+        result = f"✅ FACE detected (confidence: {pred:.2f})"
+    else:
+        result = f"❌ NO FACE detected (confidence: {1-pred:.2f})"
+
+    return img, result
+
+
+iface = gr.Interface(
+    fn=detect_face,
+    inputs=gr.Image(type="pil", label="Upload an Image"),
+    outputs=[gr.Image(label="Uploaded Image"), gr.Textbox(label="Prediction")],
+    title="🖼️ Detect Any Face",
+    description="Upload an image to check if it contains a human face.",
+    live=False
+)
+
+
+iface.launch(debug=True)
